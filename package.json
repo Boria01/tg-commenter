@@ -1,0 +1,12 @@
+{
+  "name": "tg-gh-commenter",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "run": "node commenter.js"
+  },
+  "dependencies": {
+    "qrcode-terminal": "^0.12.0",
+    "telegram": "^2.26.22"
+  }
+}
