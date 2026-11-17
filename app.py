@@ -12,10 +12,10 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest
 from telethon.errors import FloodWaitError, ChatWriteForbiddenError, UserBannedInChannelError
 
+from ads import init_ads_tables, get_active_ad_chats, ad_boards_loop
+
 MSK_TZ = timezone(timedelta(hours=3))
 DB_PATH = "commenter.db"
-
-# Максимальное время одной смены на GitHub Actions (5 часов 30 минут = 19800 сек)
 MAX_SESSION_SECONDS = 19800
 
 API_ID = int(os.environ["API_ID"])
@@ -33,22 +33,13 @@ DAILY_COMMENT_LIMIT = 8
 DAILY_JOIN_LIMIT = 3
 MIN_SUBS = 1000
 MAX_SUBS = 5000000
-SLEEP_START_HOUR = 1   # Сон с 01:00 МСК
-SLEEP_END_HOUR = 8     # Подъём в 08:00 МСК
+SLEEP_START_HOUR = 1
+SLEEP_END_HOUR = 8
 
 DEFAULT_SEED_CHANNELS = [
-    "lentachold",
-    "rian_ru",
-    "gazetaru",
-    "rbc_news",
-    "vedomosti",
-    "kommersant",
-    "izvestia",
-    "lenta_ru",
-    "tass_agency",
-    "moscowach",
-    "pdmnews",
-    "ostorozhno_novosti"
+    "lentachold", "rian_ru", "gazetaru", "rbc_news",
+    "vedomosti", "kommersant", "izvestia", "lenta_ru",
+    "tass_agency", "moscowach", "pdmnews", "ostorozhno_novosti"
 ]
 
 CATALOG_URLS = [
@@ -80,6 +71,7 @@ def init_db():
         )
     """)
     conn.commit()
+    init_ads_tables(conn)
     return conn
 
 
@@ -119,52 +111,42 @@ def get_active_channels(conn):
 def notify_admin(text):
     if not BOT_TOKEN or not ADMIN_ID:
         return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        requests.post(url, json={
-            "chat_id": ADMIN_ID,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True
-        }, timeout=15)
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            json={"chat_id": ADMIN_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
+            timeout=15
+        )
     except Exception as e:
         print(f"[Notify Error]: {e}")
 
 
 def trigger_next_github_run():
-    """Запускает следующую смену в GitHub Actions перед завершением текущей."""
     if not GITHUB_TOKEN or not GITHUB_REPOSITORY:
         return
     url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/workflows/{WORKFLOW_FILENAME}/dispatches"
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json"
-    }
+    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
     try:
         r = requests.post(url, headers=headers, json={"ref": "main"}, timeout=20)
-        print(f"[Relay] Запуск следующей смены GitHub Actions: статус {r.status_code}")
+        print(f"[Relay] Запуск следующей смены: статус {r.status_code}")
     except Exception as e:
         print(f"[Relay Error]: {e}")
 
 
 def fetch_catalog_usernames():
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
-        "Accept-Language": "ru-RU,ru;q=0.9"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36"}
     found = set()
     for url in CATALOG_URLS:
         try:
             resp = requests.get(url, headers=headers, timeout=20)
-            if resp.status_code != 200:
-                continue
-            soup = BeautifulSoup(resp.text, "html.parser")
-            for a in soup.find_all("a", href=True):
-                m = re.search(r"/channels/@([a-zA-Z0-9_]{4,32})", a["href"])
-                if m:
-                    found.add(m.group(1).lower())
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for a in soup.find_all("a", href=True):
+                    m = re.search(r"/channels/@([a-zA-Z0-9_]{4,32})", a["href"])
+                    if m:
+                        found.add(m.group(1).lower())
         except Exception as e:
-            print(f"[Catalog Parse Error] {url}: {e}")
+            print(f"[Catalog Error] {url}: {e}")
     return list(found)
 
 
@@ -172,17 +154,10 @@ def generate_comment(post_text):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
     prompt = (
         "Ты обычный читатель новостного Telegram-канала. Прочитай новость и напиши один короткий, "
-        "живой, естественный комментарий по сути (1-2 предложения, максимум 140 символов).\n"
-        "Правила:\n"
-        "- Без ссылок, хештегов, упоминаний каналов и призывов подписаться.\n"
-        "- Без канцелярита и штампов вроде «очень интересная новость» или «согласен с автором».\n"
-        "- Пиши как живой человек в обсуждении: лёгкая ирония, точный вопрос по теме или здравый вывод.\n\n"
-        f"Текст новости:\n{post_text[:1200]}"
+        "живой комментарий по сути (1-2 предложения, до 140 символов) без ссылок, хештегов и упоминаний.\n\n"
+        f"Новость:\n{post_text[:1200]}"
     )
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.85, "maxOutputTokens": 120}
-    }
+    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.85, "maxOutputTokens": 120}}
     try:
         r = requests.post(url, json=payload, timeout=25).json()
         if "candidates" not in r:
@@ -209,8 +184,7 @@ async def process_and_comment(client, conn, entity, msg):
     if get_today_comments(conn, today_str) >= DAILY_COMMENT_LIMIT:
         return False
 
-    chat_id = entity.id
-    msg_id = msg.id
+    chat_id, msg_id = entity.id, msg.id
     chat_user = (getattr(entity, "username", None) or "").lower()
 
     cur = conn.cursor()
@@ -231,16 +205,13 @@ async def process_and_comment(client, conn, entity, msg):
         conn.commit()
         chat_title = getattr(entity, "title", chat_user)
         link = f"https://t.me/{chat_user}/{msg_id}" if chat_user else ""
-        print(f"[Sent] {chat_title}: {comment_text}")
         notify_admin(
             f"💬 <b>Комментарий ({get_today_comments(conn, today_str)}/{DAILY_COMMENT_LIMIT})</b>\n"
             f"📢 <b>Канал:</b> {chat_title}\n"
-            f"✍️ <i>{comment_text}</i>\n"
-            f"{link}"
+            f"✍️ <i>{comment_text}</i>\n{link}"
         )
         return True
     except FloodWaitError as e:
-        print(f"[FloodWait] Ждём {e.seconds} сек.")
         await asyncio.sleep(e.seconds + 5)
     except (ChatWriteForbiddenError, UserBannedInChannelError):
         if chat_user:
@@ -259,12 +230,11 @@ async def scout_loop(client, conn):
         try:
             now_msk = datetime.now(MSK_TZ)
             today_str = now_msk.strftime("%Y-%m-%d")
-
             cur = conn.cursor()
+
             cur.execute("SELECT COUNT(*) FROM donor_channels WHERE status = 'candidate'")
             if cur.fetchone()[0] < 10:
-                usernames = await asyncio.to_thread(fetch_catalog_usernames)
-                for u in usernames:
+                for u in await asyncio.to_thread(fetch_catalog_usernames):
                     add_candidate(conn, u)
 
             if get_today_joins(conn, today_str) < DAILY_JOIN_LIMIT:
@@ -286,12 +256,7 @@ async def scout_loop(client, conn):
                                 (entity.id, title, today_str, uname)
                             )
                             conn.commit()
-                            print(f"[Scout] Подписались на @{uname} ({title}, {subs} подп.)")
-                            notify_admin(
-                                f"🔎 <b>Добавлен новый канал-донор</b>\n"
-                                f"📢 {title} (@{uname})\n"
-                                f"👥 Подписчиков: {subs}"
-                            )
+                            notify_admin(f"🔎 <b>Добавлен новый канал-донор</b>\n📢 {title} (@{uname})\n👥 Подписчиков: {subs}")
                             if not first_test_done:
                                 await asyncio.sleep(4)
                                 async for last_msg in client.iter_messages(entity, limit=5):
@@ -302,13 +267,11 @@ async def scout_loop(client, conn):
                         else:
                             cur.execute("UPDATE donor_channels SET status = 'rejected' WHERE username = ?", (uname,))
                             conn.commit()
-                            print(f"[Scout] Пропущен @{uname} (комменты: {bool(linked_chat)}, подп.: {subs})")
                     except FloodWaitError as e:
                         await asyncio.sleep(e.seconds + 30)
-                    except Exception as e:
+                    except Exception:
                         cur.execute("UPDATE donor_channels SET status = 'rejected' WHERE username = ?", (uname,))
                         conn.commit()
-                        print(f"[Scout Error] @{uname}: {e}")
         except Exception as e:
             print(f"[Scout Loop Error]: {e}")
 
@@ -326,24 +289,20 @@ async def run_bot():
         add_candidate(conn, seed)
 
     client = TelegramClient(
-        StringSession(TG_SESSION),
-        API_ID,
-        API_HASH,
-        device_model="Samsung Galaxy S24",
-        system_version="Android 14",
-        app_version="11.4.2",
-        lang_code="ru",
-        system_lang_code="ru-RU"
+        StringSession(TG_SESSION), API_ID, API_HASH,
+        device_model="Samsung Galaxy S24", system_version="Android 14",
+        app_version="11.4.2", lang_code="ru", system_lang_code="ru-RU"
     )
 
     await client.start()
     me = await client.get_me()
     active_list = get_active_channels(conn)
-    print(f"[OK] GitHub-смена запущена: {me.first_name} | Активных каналов: {len(active_list)}")
+    active_ads = get_active_ad_chats(conn)
     notify_admin(
-        f"🟢 <b>Первонах запущен в GitHub Actions</b>\n"
+        f"🟢 <b>Смена запущена в GitHub Actions</b>\n"
         f"👤 Аккаунт: {me.first_name}\n"
-        f"📡 Активных доноров: {len(active_list)}"
+        f"📡 Каналов для комментов: {len(active_list)}\n"
+        f"📣 Бесплатных пиар-чатов: {len(active_ads)}"
     )
 
     @client.on(events.NewMessage())
@@ -367,22 +326,17 @@ async def run_bot():
         await process_and_comment(client, conn, event.chat, event.message)
 
     asyncio.create_task(scout_loop(client, conn))
+    asyncio.create_task(ad_boards_loop(client, conn, notify_admin))
 
-    # Контроллер смены: через 5.5 часов или в 01:00 МСК корректно завершаем смену
     while True:
         await asyncio.sleep(30)
         now_msk = datetime.now(MSK_TZ)
-        elapsed = time.time() - start_ts
-
-        # Если наступила ночь (01:00 - 07:59 МСК), выходим без немедленного перезапуска — утром поднимет cron
         if SLEEP_START_HOUR <= now_msk.hour < SLEEP_END_HOUR:
-            print("[Shift] Наступила ночь (01:00 МСК), сохраняем базу и уходим спать до 08:00.")
+            print("[Shift] Наступила ночь (01:00 МСК), сохраняем базу и уходим спать.")
             await client.disconnect()
             return
-
-        # Если смена отработала 5.5 часов днём — запускаем эстафету и выходим
-        if elapsed >= MAX_SESSION_SECONDS:
-            print("[Shift] 5.5 часов истекли, передаём эстафету следующей смене...")
+        if time.time() - start_ts >= MAX_SESSION_SECONDS:
+            print("[Shift] 5.5 часов истекли, передаём эстафету...")
             await client.disconnect()
             trigger_next_github_run()
             return
@@ -390,3 +344,4 @@ async def run_bot():
 
 if __name__ == "__main__":
     asyncio.run(run_bot())
+        
