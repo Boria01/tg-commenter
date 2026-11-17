@@ -1,0 +1,52 @@
+name: Telegram First Commenter 24/7
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Утренний запуск в 08:00 МСК (05:00 UTC) + страховочный подхват в 14:00 и 20:00 МСК
+    - cron: '0 5,11,17 * * *'
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: tg-commenter-single-instance
+  cancel-in-progress: false
+
+jobs:
+  run-commenter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Userbot Shift
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python app.py
+
+      - name: Save SQLite DB
+        if: always()
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add commenter.db || true
+          git commit -m "Update commenter db" || true
+          git push || true
