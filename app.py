@@ -223,9 +223,42 @@ async def process_and_comment(client, conn, entity, msg):
     return False
 
 
+async def morning_catchup_loop(client, conn):
+    """Сразу после старта или после ночного сна отрабатывает свежие посты в активных каналах."""
+    await asyncio.sleep(10)
+    last_catchup_date = ""
+
+    while True:
+        try:
+            now_msk = datetime.now(MSK_TZ)
+            today_str = now_msk.strftime("%Y-%m-%d")
+
+            if not (SLEEP_START_HOUR <= now_msk.hour < SLEEP_END_HOUR) and last_catchup_date != today_str:
+                if get_today_comments(conn, today_str) < DAILY_COMMENT_LIMIT:
+                    active_channels = get_active_channels(conn)
+                    random.shuffle(active_channels)
+                    print(f"[Catchup] Отрабатываем свежие посты по {len(active_channels)} активным каналам...")
+                    for uname in active_channels:
+                        if get_today_comments(conn, today_str) >= DAILY_COMMENT_LIMIT:
+                            break
+                        try:
+                            entity = await client.get_entity(uname)
+                            async for msg in client.iter_messages(entity, limit=3):
+                                if msg.message and len(msg.message.strip()) >= 25:
+                                    if await process_and_comment(client, conn, entity, msg):
+                                        await asyncio.sleep(random.randint(15, 25))
+                                        break
+                        except Exception as e:
+                            print(f"[Catchup Error] @{uname}: {e}")
+                last_catchup_date = today_str
+        except Exception as e:
+            print(f"[Catchup Loop Error]: {e}")
+
+        await asyncio.sleep(300)
+
+
 async def scout_loop(client, conn):
     await asyncio.sleep(5)
-    first_test_done = get_today_comments(conn, datetime.now(MSK_TZ).strftime("%Y-%m-%d")) > 0
 
     while True:
         try:
@@ -259,13 +292,13 @@ async def scout_loop(client, conn):
                             conn.commit()
                             print(f"[Scout] Подписались на @{uname} ({title})")
                             notify_admin(f"🔎 <b>Добавлен новый канал-донор</b>\n📢 {title} (@{uname})\n👥 Подписчиков: {subs}")
-                            if not first_test_done:
+
+                            if get_today_comments(conn, today_str) < DAILY_COMMENT_LIMIT:
                                 await asyncio.sleep(4)
                                 async for last_msg in client.iter_messages(entity, limit=5):
                                     if last_msg.message and len(last_msg.message.strip()) >= 25:
                                         if await process_and_comment(client, conn, entity, last_msg):
-                                            first_test_done = True
-                                        break
+                                            break
                         else:
                             cur.execute("UPDATE donor_channels SET status = 'rejected' WHERE username = ?", (uname,))
                             conn.commit()
@@ -335,6 +368,7 @@ async def run_bot():
         await asyncio.sleep(random.randint(5, 11))
         await process_and_comment(client, conn, event.chat, event.message)
 
+    asyncio.create_task(morning_catchup_loop(client, conn))
     asyncio.create_task(scout_loop(client, conn))
     asyncio.create_task(ad_boards_loop(client, conn, notify_admin))
 
