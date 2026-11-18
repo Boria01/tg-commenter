@@ -156,7 +156,7 @@ def fetch_catalog_usernames():
 
 
 def generate_comment(post_text):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
     prompt = (
         "Ты обычный читатель новостного Telegram-канала. Прочитай новость и напиши один короткий, "
         "живой комментарий по сути (1-2 предложения, до 140 символов) без ссылок, хештегов и упоминаний.\n\n"
@@ -412,4 +412,4 @@ async def run_bot():
 
 if __name__ == "__main__":
     asyncio.run(run_bot())
-    
+                
