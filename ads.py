@@ -117,7 +117,7 @@ def get_active_ad_chats(conn):
 
 
 def generate_unique_ad_post():
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
     styles = [
         "деловой и лаконичный анонс для занятых людей",
         "живая дружеская рекомендация для тех, кто устал от длинных лент",
@@ -283,4 +283,4 @@ async def ad_boards_loop(client, conn, notify_fn):
             print(f"[AdBoards Loop Error]: {e}")
 
         await asyncio.sleep(random.randint(15, 25))
-        
+                            
