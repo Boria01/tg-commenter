@@ -205,6 +205,7 @@ async def process_and_comment(client, conn, entity, msg):
         conn.commit()
         chat_title = getattr(entity, "title", chat_user)
         link = f"https://t.me/{chat_user}/{msg_id}" if chat_user else ""
+        print(f"[Sent Comment] {chat_title}: {comment_text}")
         notify_admin(
             f"💬 <b>Комментарий ({get_today_comments(conn, today_str)}/{DAILY_COMMENT_LIMIT})</b>\n"
             f"📢 <b>Канал:</b> {chat_title}\n"
@@ -256,6 +257,7 @@ async def scout_loop(client, conn):
                                 (entity.id, title, today_str, uname)
                             )
                             conn.commit()
+                            print(f"[Scout] Подписались на @{uname} ({title})")
                             notify_admin(f"🔎 <b>Добавлен новый канал-донор</b>\n📢 {title} (@{uname})\n👥 Подписчиков: {subs}")
                             if not first_test_done:
                                 await asyncio.sleep(4)
@@ -283,6 +285,7 @@ async def scout_loop(client, conn):
 
 
 async def run_bot():
+    print("[Init] Инициализация базы данных...")
     start_ts = time.time()
     conn = init_db()
     for seed in DEFAULT_SEED_CHANNELS:
@@ -294,10 +297,17 @@ async def run_bot():
         app_version="11.4.2", lang_code="ru", system_lang_code="ru-RU"
     )
 
-    await client.start()
+    print("[Init] Подключаемся к Telegram...")
+    await asyncio.wait_for(client.connect(), timeout=25)
+    if not await client.is_user_authorized():
+        print("[ERROR] Сессия TG_SESSION не авторизована!")
+        notify_admin("❌ <b>Ошибка:</b> Сессия TG_SESSION не авторизована!")
+        return
+
     me = await client.get_me()
     active_list = get_active_channels(conn)
     active_ads = get_active_ad_chats(conn)
+    print(f"[OK] Смена запущена: {me.first_name} | Каналов: {len(active_list)} | Пиар-чатов: {len(active_ads)}")
     notify_admin(
         f"🟢 <b>Смена запущена в GitHub Actions</b>\n"
         f"👤 Аккаунт: {me.first_name}\n"
@@ -330,11 +340,6 @@ async def run_bot():
 
     while True:
         await asyncio.sleep(30)
-        now_msk = datetime.now(MSK_TZ)
-        if SLEEP_START_HOUR <= now_msk.hour < SLEEP_END_HOUR:
-            print("[Shift] Наступила ночь (01:00 МСК), сохраняем базу и уходим спать.")
-            await client.disconnect()
-            return
         if time.time() - start_ts >= MAX_SESSION_SECONDS:
             print("[Shift] 5.5 часов истекли, передаём эстафету...")
             await client.disconnect()
@@ -344,4 +349,4 @@ async def run_bot():
 
 if __name__ == "__main__":
     asyncio.run(run_bot())
-        
+    
