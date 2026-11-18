@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest
+from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest, LeaveChannelRequest
 from telethon.errors import FloodWaitError, ChatWriteForbiddenError, UserBannedInChannelError
 
 from ads import init_ads_tables, get_active_ad_chats, ad_boards_loop
@@ -35,6 +35,11 @@ MIN_SUBS = 1000
 MAX_SUBS = 5000000
 SLEEP_START_HOUR = 1
 SLEEP_END_HOUR = 8
+
+BLACKLIST_CHANNELS = {
+    "fighter_bomber", "bomber_fighter", "rybar", "wargonzo", "grey_zone",
+    "milinfolive", "voenacher", "dva_majors", "vysokygovorit", "sashakots"
+}
 
 DEFAULT_SEED_CHANNELS = [
     "lentachold", "rian_ru", "gazetaru", "rbc_news",
@@ -77,7 +82,7 @@ def init_db():
 
 def add_candidate(conn, username):
     clean = username.lstrip("@").strip().lower()
-    if not clean or len(clean) < 4 or clean.endswith("bot"):
+    if not clean or len(clean) < 4 or clean.endswith("bot") or clean in BLACKLIST_CHANNELS:
         return False
     cur = conn.cursor()
     cur.execute("SELECT 1 FROM donor_channels WHERE username = ?", (clean,))
@@ -151,19 +156,27 @@ def fetch_catalog_usernames():
 
 
 def generate_comment(post_text):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
     prompt = (
         "Ты обычный читатель новостного Telegram-канала. Прочитай новость и напиши один короткий, "
         "живой комментарий по сути (1-2 предложения, до 140 символов) без ссылок, хештегов и упоминаний.\n\n"
         f"Новость:\n{post_text[:1200]}"
     )
-    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.85, "maxOutputTokens": 120}}
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.85,
+            "maxOutputTokens": 250
+        }
+    }
     try:
         r = requests.post(url, json=payload, timeout=25).json()
         if "candidates" not in r:
+            print(f"[Gemini Fail]: {r}")
             return None
         reply = r["candidates"][0]["content"]["parts"][0]["text"].strip().strip('"\'«»')
-        if "http" in reply.lower() or "@" in reply or "t.me" in reply.lower():
+        print(f"[Gemini Reply]: {reply}")
+        if not reply or "http" in reply.lower() or "@" in reply or "t.me" in reply.lower():
             return None
         return reply
     except Exception as e:
@@ -186,6 +199,8 @@ async def process_and_comment(client, conn, entity, msg):
 
     chat_id, msg_id = entity.id, msg.id
     chat_user = (getattr(entity, "username", None) or "").lower()
+    if chat_user in BLACKLIST_CHANNELS:
+        return False
 
     cur = conn.cursor()
     cur.execute("SELECT 1 FROM commented_posts WHERE chat_id = ? AND msg_id = ?", (chat_id, msg_id))
@@ -282,7 +297,7 @@ async def scout_loop(client, conn):
                         subs = full.full_chat.participants_count or 0
                         linked_chat = full.full_chat.linked_chat_id
 
-                        if linked_chat and MIN_SUBS <= subs <= MAX_SUBS:
+                        if linked_chat and MIN_SUBS <= subs <= MAX_SUBS and uname not in BLACKLIST_CHANNELS:
                             await client(JoinChannelRequest(entity))
                             title = getattr(entity, "title", uname)
                             cur.execute(
@@ -337,6 +352,20 @@ async def run_bot():
         notify_admin("❌ <b>Ошибка:</b> Сессия TG_SESSION не авторизована!")
         return
 
+    cur = conn.cursor()
+    for bad in BLACKLIST_CHANNELS:
+        cur.execute("SELECT status FROM donor_channels WHERE username = ?", (bad,))
+        row = cur.fetchone()
+        if row and row[0] == "active":
+            try:
+                ent = await client.get_entity(bad)
+                await client(LeaveChannelRequest(ent))
+                print(f"[Blacklist] Отписались от @{bad}")
+            except Exception:
+                pass
+        cur.execute("UPDATE donor_channels SET status = 'rejected' WHERE username = ?", (bad,))
+    conn.commit()
+
     me = await client.get_me()
     active_list = get_active_channels(conn)
     active_ads = get_active_ad_chats(conn)
@@ -353,7 +382,7 @@ async def run_bot():
         if not event.is_channel or event.is_group:
             return
         chat_user = (getattr(event.chat, "username", None) or "").lower()
-        if not chat_user:
+        if not chat_user or chat_user in BLACKLIST_CHANNELS:
             return
         cur = conn.cursor()
         cur.execute("SELECT 1 FROM donor_channels WHERE username = ? AND status = 'active'", (chat_user,))
