@@ -3,7 +3,6 @@ name: Telegram First Commenter 24/7
 on:
   workflow_dispatch:
   schedule:
-    # Утренний запуск в 08:00 МСК (05:00 UTC) + страховочный подхват в 14:00 и 20:00 МСК
     - cron: '0 5,11,17 * * *'
 
 permissions:
@@ -39,8 +38,8 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           ADMIN_ID: ${{ secrets.ADMIN_ID }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python app.py
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: python -u app.py
 
       - name: Save SQLite DB
         if: always()
@@ -50,3 +49,4 @@ jobs:
           git add commenter.db || true
           git commit -m "Update commenter db" || true
           git push || true
+          
