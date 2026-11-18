@@ -117,7 +117,7 @@ def get_active_ad_chats(conn):
 
 
 def generate_unique_ad_post():
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
     styles = [
         "деловой и лаконичный анонс для занятых людей",
         "живая дружеская рекомендация для тех, кто устал от длинных лент",
@@ -132,7 +132,10 @@ def generate_unique_ad_post():
     )
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.95, "maxOutputTokens": 180}
+        "generationConfig": {
+            "temperature": 0.95,
+            "maxOutputTokens": 300
+        }
     }
     try:
         r = requests.post(url, json=payload, timeout=25).json()
@@ -140,6 +143,8 @@ def generate_unique_ad_post():
             ad_text = r["candidates"][0]["content"]["parts"][0]["text"].strip().strip('"\'«»')
             if TARGET_PROMO_CHANNEL.lower() in ad_text.lower() and 30 <= len(ad_text) <= 450:
                 return ad_text
+        else:
+            print(f"[Gemini Ad Fail]: {r}")
     except Exception as e:
         print(f"[Gemini Ad Error]: {e}")
 
@@ -152,7 +157,7 @@ def generate_unique_ad_post():
 
 
 async def ad_boards_loop(client, conn, notify_fn):
-    await asyncio.sleep(25)
+    await asyncio.sleep(20)
 
     while True:
         try:
@@ -220,6 +225,7 @@ async def ad_boards_loop(client, conn, notify_fn):
                                         (entity.id, title, today_str, uname)
                                     )
                                     conn.commit()
+                                    print(f"[AdScout] Вступили в пиар-чат @{uname} ({title})")
                                     notify_fn(
                                         f"📣 <b>Найдена бесплатная рекламная площадка</b>\n"
                                         f"💬 {title} (@{uname})\n"
@@ -252,6 +258,7 @@ async def ad_boards_loop(client, conn, notify_fn):
                             (t_uname, today_str, ad_text, now_msk.isoformat())
                         )
                         conn.commit()
+                        print(f"[AdPost] Реклама отправлена в @{t_uname}")
                         notify_fn(
                             f"🚀 <b>Реклама опубликована ({get_today_ads(conn, today_str)}/{DAILY_AD_LIMIT})</b>\n"
                             f"📍 <b>Площадка:</b> {t_title} (@{t_uname})\n"
@@ -276,4 +283,4 @@ async def ad_boards_loop(client, conn, notify_fn):
             print(f"[AdBoards Loop Error]: {e}")
 
         await asyncio.sleep(random.randint(15, 25))
-      
+        
