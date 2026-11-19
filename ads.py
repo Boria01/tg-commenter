@@ -18,10 +18,10 @@ from telethon.errors import (
 MSK_TZ = timezone(timedelta(hours=3))
 
 TARGET_PROMO_CHANNEL = "@glavnoe_chasa"
-DAILY_AD_LIMIT = 4
-DAILY_AD_JOIN_LIMIT = 3
+DAILY_AD_LIMIT = 15
+DAILY_AD_JOIN_LIMIT = 8
 MIN_AD_CHAT_MEMBERS = 300
-AD_REPEAT_COOLDOWN_HOURS = 96
+AD_REPEAT_COOLDOWN_HOURS = 24
 
 SLEEP_START_HOUR = 1
 SLEEP_END_HOUR = 8
@@ -170,7 +170,7 @@ async def ad_boards_loop(client, conn, notify_fn):
             cur = conn.cursor()
 
             cur.execute("SELECT COUNT(*) FROM ad_chats WHERE status = 'candidate'")
-            if cur.fetchone()[0] < 8:
+            if cur.fetchone()[0] < 12:
                 query = random.choice(AD_SEARCH_QUERIES)
                 try:
                     res = await client(SearchRequest(q=query, limit=30))
@@ -265,7 +265,7 @@ async def ad_boards_loop(client, conn, notify_fn):
                             f"📝 <i>{ad_text}</i>\n"
                             f"https://t.me/{t_uname}/{sent_msg.id}"
                         )
-                        await asyncio.sleep(random.randint(7200, 10800))
+                        await asyncio.sleep(random.randint(1500, 2700))
                         continue
                     except (ChatWriteForbiddenError, UserBannedInChannelError, ChannelPrivateError):
                         cur.execute("UPDATE ad_chats SET status = 'rejected' WHERE username = ?", (t_uname,))
@@ -283,4 +283,4 @@ async def ad_boards_loop(client, conn, notify_fn):
             print(f"[AdBoards Loop Error]: {e}")
 
         await asyncio.sleep(random.randint(15, 25))
-                            
+        
