@@ -28,13 +28,7 @@ SLEEP_END_HOUR = 8
 
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
-GEMINI_MODELS = [
-    "gemini-3.5-flash-lite",
-    "gemini-3.8-flash",
-    "gemini-3.6-flash",
-    "gemini-3.1-flash-lite",
-    "gemma-4-31b-it"
-]
+DISCOVERED_MODELS = []
 
 AD_SEARCH_QUERIES = [
     "пиар чат",
@@ -65,6 +59,38 @@ AD_STOP_WORDS = [
     "без ссылок",
     "реклама запрещена"
 ]
+
+
+def discover_working_models():
+    """Запрашивает у Google AI Studio реальный список доступных моделей для текущего API-ключа."""
+    global DISCOVERED_MODELS
+    if DISCOVERED_MODELS:
+        return DISCOVERED_MODELS
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
+    found = []
+    try:
+        r = requests.get(url, timeout=20).json()
+        for m in r.get("models", []):
+            name = m.get("name", "").replace("models/", "")
+            methods = m.get("supportedGenerationMethods", [])
+            if "generateContent" in methods and ("gemini" in name or "gemma" in name):
+                if not any(bad in name for bad in ["embedding", "imagen", "veo", "aqa", "vision", "audio", "tts", "robotics", "computer-use"]):
+                    found.append(name)
+    except Exception as e:
+        print(f"[Models Discovery Error]: {e}")
+
+    # Приоритет лёгким и быстрым моделям (flash-lite / flash / gemma)
+    found.sort(key=lambda x: (
+        0 if "flash-lite" in x else (1 if "flash" in x else (2 if "gemma" in x else 3)),
+        x
+    ))
+    if not found:
+        found = ["gemini-3.5-flash-lite", "gemini-3-flash-preview", "gemma-4-31b-it"]
+
+    DISCOVERED_MODELS = found
+    print(f"[Models] Доступные модели на ключе ({len(found)}): {found}")
+    return found
 
 
 def init_ads_tables(conn):
@@ -125,6 +151,7 @@ def get_active_ad_chats(conn):
 
 
 def generate_unique_ad_post():
+    models = discover_working_models()
     styles = [
         "деловой и лаконичный анонс для занятых людей",
         "живая дружеская рекомендация для тех, кто устал от длинных лент",
@@ -138,7 +165,7 @@ def generate_unique_ad_post():
         f"Обязательно вставь ссылку {TARGET_PROMO_CHANNEL}. Длина до 230 символов, 1–2 эмодзи, без капса. Верни только готовый текст."
     )
 
-    for model_name in GEMINI_MODELS:
+    for model_name in list(models):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -152,10 +179,13 @@ def generate_unique_ad_post():
             if "candidates" in r:
                 ad_text = r["candidates"][0]["content"]["parts"][0]["text"].strip().strip('"\'«»')
                 if TARGET_PROMO_CHANNEL.lower() in ad_text.lower() and 30 <= len(ad_text) <= 450:
+                    print(f"[Gemini Ad ({model_name}) OK]")
                     return ad_text
             else:
                 err_code = r.get("error", {}).get("code", "")
-                print(f"[Gemini Ad {model_name} Skip]: {err_code or r}")
+                print(f"[Gemini Ad {model_name} Skip]: {err_code}")
+                if err_code == 404 and model_name in DISCOVERED_MODELS:
+                    DISCOVERED_MODELS.remove(model_name)
         except Exception as e:
             print(f"[Gemini Ad {model_name} Error]: {e}")
 
@@ -294,4 +324,4 @@ async def ad_boards_loop(client, conn, notify_fn):
             print(f"[AdBoards Loop Error]: {e}")
 
         await asyncio.sleep(random.randint(15, 25))
-                                    
+    
