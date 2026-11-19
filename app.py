@@ -31,8 +31,10 @@ WORKFLOW_FILENAME = "commenter.yml"
 
 GEMINI_MODELS = [
     "gemini-3.5-flash-lite",
-    "gemini-2.5-flash",
-    "gemma-3-27b-it"
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.1-flash-lite",
+    "gemma-4-31b-it"
 ]
 
 DAILY_COMMENT_LIMIT = 20
@@ -62,7 +64,6 @@ CATALOG_URLS = [
     "https://tlgrm.ru/channels/tech"
 ]
 
-# Кэш уже проверенных постов в рамках смены, чтобы не гонять их в Gemini по кругу
 SEEN_POSTS_CACHE = set()
 
 
@@ -184,13 +185,12 @@ def generate_comment(post_text):
 
     for model_name in GEMINI_MODELS:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-        gen_cfg = {"temperature": 0.85, "maxOutputTokens": 250}
-        if "2.5" in model_name:
-            gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
-
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": gen_cfg
+            "generationConfig": {
+                "temperature": 0.85,
+                "maxOutputTokens": 250
+            }
         }
         try:
             r = requests.post(url, json=payload, timeout=25).json()
@@ -240,7 +240,6 @@ async def process_and_comment(client, conn, entity, msg):
         SEEN_POSTS_CACHE.add((chat_id, msg_id))
         return False
 
-    # Сразу помечаем пост просмотренным, чтобы не тратить на него лимит API повторно
     SEEN_POSTS_CACHE.add((chat_id, msg_id))
 
     comment_text = await asyncio.to_thread(generate_comment, post_text)
