@@ -29,6 +29,12 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPOSITORY = os.environ.get("GITHUB_REPOSITORY", "")
 WORKFLOW_FILENAME = "commenter.yml"
 
+GEMINI_MODELS = [
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemma-3-27b-it"
+]
+
 DAILY_COMMENT_LIMIT = 20
 DAILY_PER_CHANNEL_LIMIT = 1
 DAILY_JOIN_LIMIT = 5
@@ -55,6 +61,9 @@ CATALOG_URLS = [
     "https://tlgrm.ru/channels/economics",
     "https://tlgrm.ru/channels/tech"
 ]
+
+# Кэш уже проверенных постов в рамках смены, чтобы не гонять их в Gemini по кругу
+SEEN_POSTS_CACHE = set()
 
 
 def init_db():
@@ -167,37 +176,47 @@ def fetch_catalog_usernames():
 
 
 def generate_comment(post_text):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
     prompt = (
         "Ты обычный адекватный читатель новостного Telegram-канала. Прочитай новость и напиши один короткий, "
         "спокойный, живой комментарий по сути (1-2 предложения, до 140 символов) без политики, токсичности, ссылок, хештегов и упоминаний.\n\n"
         f"Новость:\n{post_text[:1200]}"
     )
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.85,
-            "maxOutputTokens": 250
+
+    for model_name in GEMINI_MODELS:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+        gen_cfg = {"temperature": 0.85, "maxOutputTokens": 250}
+        if "2.5" in model_name:
+            gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
+
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": gen_cfg
         }
-    }
-    try:
-        r = requests.post(url, json=payload, timeout=25).json()
-        if "candidates" not in r:
-            print(f"[Gemini Fail]: {r}")
-            return None
-        reply = r["candidates"][0]["content"]["parts"][0]["text"].strip().strip('"\'«»')
-        print(f"[Gemini Reply]: {reply}")
-        if not reply or "http" in reply.lower() or "@" in reply or "t.me" in reply.lower():
-            return None
-        return reply
-    except Exception as e:
-        print(f"[Gemini Error]: {e}")
-        return None
+        try:
+            r = requests.post(url, json=payload, timeout=25).json()
+            if "candidates" not in r:
+                err_code = r.get("error", {}).get("code", "")
+                print(f"[Gemini {model_name} Skip]: {err_code or r}")
+                continue
+            reply = r["candidates"][0]["content"]["parts"][0]["text"].strip().strip('"\'«»')
+            if not reply or "http" in reply.lower() or "@" in reply or "t.me" in reply.lower():
+                return None
+            print(f"[Gemini ({model_name}) Reply]: {reply}")
+            return reply
+        except Exception as e:
+            print(f"[Gemini {model_name} Error]: {e}")
+            continue
+
+    return None
 
 
 async def process_and_comment(client, conn, entity, msg):
     post_text = (msg.message or "").strip()
     if len(post_text) < 25:
+        return False
+
+    chat_id, msg_id = entity.id, msg.id
+    if (chat_id, msg_id) in SEEN_POSTS_CACHE:
         return False
 
     now_msk = datetime.now(MSK_TZ)
@@ -208,7 +227,6 @@ async def process_and_comment(client, conn, entity, msg):
     if get_today_comments(conn, today_str) >= DAILY_COMMENT_LIMIT:
         return False
 
-    chat_id, msg_id = entity.id, msg.id
     chat_user = (getattr(entity, "username", None) or "").lower()
     if chat_user in BLACKLIST_CHANNELS:
         return False
@@ -219,9 +237,13 @@ async def process_and_comment(client, conn, entity, msg):
     cur = conn.cursor()
     cur.execute("SELECT 1 FROM commented_posts WHERE chat_id = ? AND msg_id = ?", (chat_id, msg_id))
     if cur.fetchone():
+        SEEN_POSTS_CACHE.add((chat_id, msg_id))
         return False
 
-    comment_text = generate_comment(post_text)
+    # Сразу помечаем пост просмотренным, чтобы не тратить на него лимит API повторно
+    SEEN_POSTS_CACHE.add((chat_id, msg_id))
+
+    comment_text = await asyncio.to_thread(generate_comment, post_text)
     if not comment_text:
         return False
 
