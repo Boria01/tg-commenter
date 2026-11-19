@@ -29,8 +29,9 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPOSITORY = os.environ.get("GITHUB_REPOSITORY", "")
 WORKFLOW_FILENAME = "commenter.yml"
 
-DAILY_COMMENT_LIMIT = 8
-DAILY_JOIN_LIMIT = 3
+DAILY_COMMENT_LIMIT = 20
+DAILY_PER_CHANNEL_LIMIT = 1
+DAILY_JOIN_LIMIT = 5
 MIN_SUBS = 1000
 MAX_SUBS = 5000000
 SLEEP_START_HOUR = 1
@@ -38,18 +39,21 @@ SLEEP_END_HOUR = 8
 
 BLACKLIST_CHANNELS = {
     "fighter_bomber", "bomber_fighter", "rybar", "wargonzo", "grey_zone",
-    "milinfolive", "voenacher", "dva_majors", "vysokygovorit", "sashakots"
+    "milinfolive", "voenacher", "dva_majors", "vysokygovorit", "sashakots",
+    "nexta_live", "meduzaproject", "tvrain", "uniannet", "truexanewsua"
 }
 
 DEFAULT_SEED_CHANNELS = [
     "lentachold", "rian_ru", "gazetaru", "rbc_news",
     "vedomosti", "kommersant", "izvestia", "lenta_ru",
-    "tass_agency", "moscowach", "pdmnews", "ostorozhno_novosti"
+    "tass_agency", "moscowach", "pdmnews", "ostorozhno_novosti",
+    "forbesrussia", "banksta", "rozetked", "kod_ru"
 ]
 
 CATALOG_URLS = [
     "https://tlgrm.ru/channels/news",
-    "https://tlgrm.ru/channels/politics"
+    "https://tlgrm.ru/channels/economics",
+    "https://tlgrm.ru/channels/tech"
 ]
 
 
@@ -96,6 +100,13 @@ def add_candidate(conn, username):
 def get_today_comments(conn, date_str):
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM commented_posts WHERE date_str = ?", (date_str,))
+    row = cur.fetchone()
+    return row[0] if row else 0
+
+
+def get_today_channel_comments(conn, chat_id, date_str):
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM commented_posts WHERE chat_id = ? AND date_str = ?", (chat_id, date_str))
     row = cur.fetchone()
     return row[0] if row else 0
 
@@ -158,8 +169,8 @@ def fetch_catalog_usernames():
 def generate_comment(post_text):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
     prompt = (
-        "Ты обычный читатель новостного Telegram-канала. Прочитай новость и напиши один короткий, "
-        "живой комментарий по сути (1-2 предложения, до 140 символов) без ссылок, хештегов и упоминаний.\n\n"
+        "Ты обычный адекватный читатель новостного Telegram-канала. Прочитай новость и напиши один короткий, "
+        "спокойный, живой комментарий по сути (1-2 предложения, до 140 символов) без политики, токсичности, ссылок, хештегов и упоминаний.\n\n"
         f"Новость:\n{post_text[:1200]}"
     )
     payload = {
@@ -202,6 +213,9 @@ async def process_and_comment(client, conn, entity, msg):
     if chat_user in BLACKLIST_CHANNELS:
         return False
 
+    if get_today_channel_comments(conn, chat_id, today_str) >= DAILY_PER_CHANNEL_LIMIT:
+        return False
+
     cur = conn.cursor()
     cur.execute("SELECT 1 FROM commented_posts WHERE chat_id = ? AND msg_id = ?", (chat_id, msg_id))
     if cur.fetchone():
@@ -212,7 +226,20 @@ async def process_and_comment(client, conn, entity, msg):
         return False
 
     try:
-        await client.send_message(entity=entity, message=comment_text, comment_to=msg_id)
+        try:
+            await client.send_message(entity=entity, message=comment_text, comment_to=msg_id)
+        except Exception as send_err:
+            if "discussion group before commenting" in str(send_err):
+                full = await client(GetFullChannelRequest(channel=entity))
+                if full.full_chat.linked_chat_id:
+                    await client(JoinChannelRequest(full.full_chat.linked_chat_id))
+                    await asyncio.sleep(3)
+                    await client.send_message(entity=entity, message=comment_text, comment_to=msg_id)
+                else:
+                    raise send_err
+            else:
+                raise send_err
+
         cur.execute(
             "INSERT INTO commented_posts (chat_id, msg_id, date_str, comment_text, created_at) VALUES (?, ?, ?, ?, ?)",
             (chat_id, msg_id, today_str, comment_text, now_msk.isoformat())
@@ -235,11 +262,14 @@ async def process_and_comment(client, conn, entity, msg):
             conn.commit()
     except Exception as e:
         print(f"[Send Error] @{chat_user}/{msg_id}: {e}")
+        if chat_user:
+            cur.execute("UPDATE donor_channels SET status = 'rejected' WHERE username = ?", (chat_user,))
+            conn.commit()
     return False
 
 
 async def morning_catchup_loop(client, conn):
-    """Сразу после старта или после ночного сна отрабатывает свежие посты в активных каналах."""
+    """Сразу после старта или после ночного сна отрабатывает свежие посты в активных каналах (по 1 на канал)."""
     await asyncio.sleep(10)
     last_catchup_date = ""
 
@@ -258,11 +288,13 @@ async def morning_catchup_loop(client, conn):
                             break
                         try:
                             entity = await client.get_entity(uname)
+                            if get_today_channel_comments(conn, entity.id, today_str) >= DAILY_PER_CHANNEL_LIMIT:
+                                continue
                             async for msg in client.iter_messages(entity, limit=3):
                                 if msg.message and len(msg.message.strip()) >= 25:
                                     if await process_and_comment(client, conn, entity, msg):
                                         await asyncio.sleep(random.randint(15, 25))
-                                        break
+                                    break
                         except Exception as e:
                             print(f"[Catchup Error] @{uname}: {e}")
                 last_catchup_date = today_str
@@ -282,7 +314,7 @@ async def scout_loop(client, conn):
             cur = conn.cursor()
 
             cur.execute("SELECT COUNT(*) FROM donor_channels WHERE status = 'candidate'")
-            if cur.fetchone()[0] < 10:
+            if cur.fetchone()[0] < 15:
                 for u in await asyncio.to_thread(fetch_catalog_usernames):
                     add_candidate(conn, u)
 
@@ -412,4 +444,4 @@ async def run_bot():
 
 if __name__ == "__main__":
     asyncio.run(run_bot())
-                
+    
