@@ -28,6 +28,12 @@ SLEEP_END_HOUR = 8
 
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
+GEMINI_MODELS = [
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemma-3-27b-it"
+]
+
 AD_SEARCH_QUERIES = [
     "пиар чат",
     "бесплатный пиар",
@@ -117,7 +123,6 @@ def get_active_ad_chats(conn):
 
 
 def generate_unique_ad_post():
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
     styles = [
         "деловой и лаконичный анонс для занятых людей",
         "живая дружеская рекомендация для тех, кто устал от длинных лент",
@@ -130,23 +135,28 @@ def generate_unique_ad_post():
         f"Канал: «Главное за час» ({TARGET_PROMO_CHANNEL}) — краткие выжимки главных событий России и мира каждый час, без воды и спама.\n"
         f"Обязательно вставь ссылку {TARGET_PROMO_CHANNEL}. Длина до 230 символов, 1–2 эмодзи, без капса. Верни только готовый текст."
     )
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.95,
-            "maxOutputTokens": 300
+
+    for model_name in GEMINI_MODELS:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+        gen_cfg = {"temperature": 0.95, "maxOutputTokens": 300}
+        if "2.5" in model_name:
+            gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
+
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": gen_cfg
         }
-    }
-    try:
-        r = requests.post(url, json=payload, timeout=25).json()
-        if "candidates" in r:
-            ad_text = r["candidates"][0]["content"]["parts"][0]["text"].strip().strip('"\'«»')
-            if TARGET_PROMO_CHANNEL.lower() in ad_text.lower() and 30 <= len(ad_text) <= 450:
-                return ad_text
-        else:
-            print(f"[Gemini Ad Fail]: {r}")
-    except Exception as e:
-        print(f"[Gemini Ad Error]: {e}")
+        try:
+            r = requests.post(url, json=payload, timeout=25).json()
+            if "candidates" in r:
+                ad_text = r["candidates"][0]["content"]["parts"][0]["text"].strip().strip('"\'«»')
+                if TARGET_PROMO_CHANNEL.lower() in ad_text.lower() and 30 <= len(ad_text) <= 450:
+                    return ad_text
+            else:
+                err_code = r.get("error", {}).get("code", "")
+                print(f"[Gemini Ad {model_name} Skip]: {err_code or r}")
+        except Exception as e:
+            print(f"[Gemini Ad {model_name} Error]: {e}")
 
     fallbacks = [
         f"📰 Устали листать десятки каналов ради пары новостей? В {TARGET_PROMO_CHANNEL} собираем только главное за каждый час — коротко и по делу.",
