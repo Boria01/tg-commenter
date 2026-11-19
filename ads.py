@@ -30,8 +30,10 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
 GEMINI_MODELS = [
     "gemini-3.5-flash-lite",
-    "gemini-2.5-flash",
-    "gemma-3-27b-it"
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.1-flash-lite",
+    "gemma-4-31b-it"
 ]
 
 AD_SEARCH_QUERIES = [
@@ -138,13 +140,12 @@ def generate_unique_ad_post():
 
     for model_name in GEMINI_MODELS:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-        gen_cfg = {"temperature": 0.95, "maxOutputTokens": 300}
-        if "2.5" in model_name:
-            gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
-
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": gen_cfg
+            "generationConfig": {
+                "temperature": 0.95,
+                "maxOutputTokens": 300
+            }
         }
         try:
             r = requests.post(url, json=payload, timeout=25).json()
@@ -293,4 +294,4 @@ async def ad_boards_loop(client, conn, notify_fn):
             print(f"[AdBoards Loop Error]: {e}")
 
         await asyncio.sleep(random.randint(15, 25))
-        
+                                    
