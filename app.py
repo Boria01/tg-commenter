@@ -12,7 +12,7 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest, LeaveChannelRequest
 from telethon.errors import FloodWaitError, ChatWriteForbiddenError, UserBannedInChannelError
 
-from ads import init_ads_tables, get_active_ad_chats, ad_boards_loop
+from ads import init_ads_tables, get_active_ad_chats, ad_boards_loop, discover_working_models
 
 MSK_TZ = timezone(timedelta(hours=3))
 DB_PATH = "commenter.db"
@@ -28,14 +28,6 @@ ADMIN_ID = os.environ.get("ADMIN_ID", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPOSITORY = os.environ.get("GITHUB_REPOSITORY", "")
 WORKFLOW_FILENAME = "commenter.yml"
-
-GEMINI_MODELS = [
-    "gemini-3.5-flash-lite",
-    "gemini-3.8-flash",
-    "gemini-3.6-flash",
-    "gemini-3.1-flash-lite",
-    "gemma-4-31b-it"
-]
 
 DAILY_COMMENT_LIMIT = 20
 DAILY_PER_CHANNEL_LIMIT = 1
@@ -65,6 +57,7 @@ CATALOG_URLS = [
 ]
 
 SEEN_POSTS_CACHE = set()
+ACTIVE_MODELS = []
 
 
 def init_db():
@@ -177,13 +170,17 @@ def fetch_catalog_usernames():
 
 
 def generate_comment(post_text):
+    global ACTIVE_MODELS
+    if not ACTIVE_MODELS:
+        ACTIVE_MODELS = discover_working_models()
+
     prompt = (
         "Ты обычный адекватный читатель новостного Telegram-канала. Прочитай новость и напиши один короткий, "
         "спокойный, живой комментарий по сути (1-2 предложения, до 140 символов) без политики, токсичности, ссылок, хештегов и упоминаний.\n\n"
         f"Новость:\n{post_text[:1200]}"
     )
 
-    for model_name in GEMINI_MODELS:
+    for model_name in list(ACTIVE_MODELS):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -196,7 +193,9 @@ def generate_comment(post_text):
             r = requests.post(url, json=payload, timeout=25).json()
             if "candidates" not in r:
                 err_code = r.get("error", {}).get("code", "")
-                print(f"[Gemini {model_name} Skip]: {err_code or r}")
+                print(f"[Gemini {model_name} Skip]: {err_code}")
+                if err_code == 404 and model_name in ACTIVE_MODELS:
+                    ACTIVE_MODELS.remove(model_name)
                 continue
             reply = r["candidates"][0]["content"]["parts"][0]["text"].strip().strip('"\'«»')
             if not reply or "http" in reply.lower() or "@" in reply or "t.me" in reply.lower():
@@ -386,11 +385,14 @@ async def scout_loop(client, conn):
 
 
 async def run_bot():
+    global ACTIVE_MODELS
     print("[Init] Инициализация базы данных...")
     start_ts = time.time()
     conn = init_db()
     for seed in DEFAULT_SEED_CHANNELS:
         add_candidate(conn, seed)
+
+    ACTIVE_MODELS = await asyncio.to_thread(discover_working_models)
 
     client = TelegramClient(
         StringSession(TG_SESSION), API_ID, API_HASH,
@@ -427,7 +429,8 @@ async def run_bot():
         f"🟢 <b>Смена запущена в GitHub Actions</b>\n"
         f"👤 Аккаунт: {me.first_name}\n"
         f"📡 Каналов для комментов: {len(active_list)}\n"
-        f"📣 Бесплатных пиар-чатов: {len(active_ads)}"
+        f"📣 Бесплатных пиар-чатов: {len(active_ads)}\n"
+        f"🤖 Модели: {', '.join(ACTIVE_MODELS[:4])}"
     )
 
     @client.on(events.NewMessage())
@@ -465,4 +468,4 @@ async def run_bot():
 
 if __name__ == "__main__":
     asyncio.run(run_bot())
-    
+        
