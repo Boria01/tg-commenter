@@ -12,7 +12,7 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest, LeaveChannelRequest
 from telethon.errors import FloodWaitError, ChatWriteForbiddenError, UserBannedInChannelError
 
-from ads import init_ads_tables, get_active_ad_chats, ad_boards_loop, discover_working_models
+from ads import init_ads_tables, get_active_ad_chats, ad_boards_loop, discover_working_models, mute_peer
 
 MSK_TZ = timezone(timedelta(hours=3))
 DB_PATH = "commenter.db"
@@ -40,7 +40,8 @@ SLEEP_END_HOUR = 8
 BLACKLIST_CHANNELS = {
     "fighter_bomber", "bomber_fighter", "rybar", "wargonzo", "grey_zone",
     "milinfolive", "voenacher", "dva_majors", "vysokygovorit", "sashakots",
-    "nexta_live", "meduzaproject", "tvrain", "uniannet", "truexanewsua"
+    "nexta_live", "meduzaproject", "tvrain", "uniannet", "truexanewsua",
+    "wylsared"
 }
 
 DEFAULT_SEED_CHANNELS = [
@@ -133,7 +134,7 @@ def notify_admin(text):
     try:
         requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={"chat_id": ADMIN_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
+            json={"chat_id": str(ADMIN_ID).strip(), "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
             timeout=15
         )
     except Exception as e:
@@ -253,6 +254,7 @@ async def process_and_comment(client, conn, entity, msg):
                 full = await client(GetFullChannelRequest(channel=entity))
                 if full.full_chat.linked_chat_id:
                     await client(JoinChannelRequest(full.full_chat.linked_chat_id))
+                    await mute_peer(client, full.full_chat.linked_chat_id)
                     await asyncio.sleep(3)
                     await client.send_message(entity=entity, message=comment_text, comment_to=msg_id)
                 else:
@@ -351,13 +353,14 @@ async def scout_loop(client, conn):
 
                         if linked_chat and MIN_SUBS <= subs <= MAX_SUBS and uname not in BLACKLIST_CHANNELS:
                             await client(JoinChannelRequest(entity))
+                            await mute_peer(client, entity)
                             title = getattr(entity, "title", uname)
                             cur.execute(
                                 "UPDATE donor_channels SET chat_id = ?, title = ?, status = 'active', joined_date = ? WHERE username = ?",
                                 (entity.id, title, today_str, uname)
                             )
                             conn.commit()
-                            print(f"[Scout] Подписались на @{uname} ({title})")
+                            print(f"[Scout] Подписались (без звука) на @{uname} ({title})")
                             notify_admin(f"🔎 <b>Добавлен новый канал-донор</b>\n📢 {title} (@{uname})\n👥 Подписчиков: {subs}")
 
                             if get_today_comments(conn, today_str) < DAILY_COMMENT_LIMIT:
@@ -450,7 +453,7 @@ async def run_bot():
             if m.lower() != chat_user:
                 add_candidate(conn, m)
 
-        await asyncio.sleep(random.randint(5, 11))
+        await asyncio.sleep(random.randint(20, 40))
         await process_and_comment(client, conn, event.chat, event.message)
 
     asyncio.create_task(morning_catchup_loop(client, conn))
@@ -468,4 +471,4 @@ async def run_bot():
 
 if __name__ == "__main__":
     asyncio.run(run_bot())
-        
+                    
