@@ -238,7 +238,7 @@ async def ad_boards_loop(client, conn, notify_fn):
                     res = await client(SearchRequest(q=query, limit=30))
                     added = 0
                     for chat in res.chats:
-                        if isinstance(chat, Channel) and getattr(chat, "megagroup", False):
+                        if isinstance(chat, Channel) and getattr(chat, "megagroup", False) and not getattr(chat, "forum", False):
                             uname = getattr(chat, "username", None)
                             if uname and add_ad_candidate(conn, uname):
                                 added += 1
@@ -255,7 +255,7 @@ async def ad_boards_loop(client, conn, notify_fn):
                     uname = row[0]
                     try:
                         entity = await client.get_entity(uname)
-                        if not isinstance(entity, Channel) or not getattr(entity, "megagroup", False):
+                        if not isinstance(entity, Channel) or not getattr(entity, "megagroup", False) or getattr(entity, "forum", False):
                             cur.execute("UPDATE ad_chats SET status = 'rejected' WHERE username = ?", (uname,))
                             conn.commit()
                         else:
@@ -343,12 +343,11 @@ async def ad_boards_loop(client, conn, notify_fn):
                         await asyncio.sleep(e.seconds + 30)
                     except Exception as e:
                         print(f"[AdPost Error] @{t_uname}: {e}")
-                        if "plain results" in str(e) or "send_messages" in str(e):
-                            cur.execute("UPDATE ad_chats SET status = 'rejected' WHERE username = ?", (t_uname,))
-                            conn.commit()
+                        cur.execute("UPDATE ad_chats SET status = 'rejected' WHERE username = ?", (t_uname,))
+                        conn.commit()
 
         except Exception as e:
             print(f"[AdBoards Loop Error]: {e}")
 
         await asyncio.sleep(random.randint(15, 25))
-    
+                        
