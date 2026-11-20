@@ -6,7 +6,8 @@ import requests
 from datetime import datetime, timezone, timedelta
 from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest, LeaveChannelRequest
 from telethon.tl.functions.contacts import SearchRequest
-from telethon.tl.types import Channel
+from telethon.tl.functions.account import UpdateNotifySettingsRequest
+from telethon.tl.types import Channel, InputPeerNotifySettings
 from telethon.errors import (
     FloodWaitError,
     ChatWriteForbiddenError,
@@ -57,12 +58,33 @@ AD_STOP_WORDS = [
     "чтобы писать в чат",
     "ссылки запрещены",
     "без ссылок",
-    "реклама запрещена"
+    "реклама запрещена",
+    "украина",
+    "україна",
+    "киев",
+    "харьков",
+    "одесса",
+    "днепр"
 ]
 
 
+async def mute_peer(client, peer):
+    """Переводит канал или чат в бессрочный беззвучный режим."""
+    try:
+        input_peer = await client.get_input_entity(peer)
+        await client(UpdateNotifySettingsRequest(
+            peer=input_peer,
+            settings=InputPeerNotifySettings(
+                mute_until=2147483647,
+                silent=True
+            )
+        ))
+    except Exception as e:
+        print(f"[Mute Error]: {e}")
+
+
 def discover_working_models():
-    """Запрашивает у Google AI Studio реальный список доступных моделей для текущего API-ключа."""
+    """Запрашивает у Google AI Studio реальный список доступных текстовых моделей для текущего API-ключа."""
     global DISCOVERED_MODELS
     if DISCOVERED_MODELS:
         return DISCOVERED_MODELS
@@ -75,12 +97,11 @@ def discover_working_models():
             name = m.get("name", "").replace("models/", "")
             methods = m.get("supportedGenerationMethods", [])
             if "generateContent" in methods and ("gemini" in name or "gemma" in name):
-                if not any(bad in name for bad in ["embedding", "imagen", "veo", "aqa", "vision", "audio", "tts", "robotics", "computer-use"]):
+                if not any(bad in name for bad in ["embedding", "imagen", "image", "veo", "aqa", "vision", "audio", "tts", "robotics", "computer-use"]):
                     found.append(name)
     except Exception as e:
         print(f"[Models Discovery Error]: {e}")
 
-    # Приоритет лёгким и быстрым моделям (flash-lite / flash / gemma)
     found.sort(key=lambda x: (
         0 if "flash-lite" in x else (1 if "flash" in x else (2 if "gemma" in x else 3)),
         x
@@ -242,10 +263,13 @@ async def ad_boards_loop(client, conn, notify_fn):
                             can_send = not (banned and getattr(banned, "send_messages", False))
                             full = await client(GetFullChannelRequest(channel=entity))
                             members = full.full_chat.participants_count or 0
+                            title_lower = (getattr(entity, "title", "") or "").lower()
                             about_text = (full.full_chat.about or "").lower()
+                            combined_text = f"{title_lower} {about_text}"
 
-                            if can_send and members >= MIN_AD_CHAT_MEMBERS and not any(sw in about_text for sw in AD_STOP_WORDS):
+                            if can_send and members >= MIN_AD_CHAT_MEMBERS and not any(sw in combined_text for sw in AD_STOP_WORDS):
                                 await client(JoinChannelRequest(entity))
+                                await mute_peer(client, entity)
                                 await asyncio.sleep(5)
 
                                 gatekeeper = False
@@ -266,7 +290,7 @@ async def ad_boards_loop(client, conn, notify_fn):
                                         (entity.id, title, today_str, uname)
                                     )
                                     conn.commit()
-                                    print(f"[AdScout] Вступили в пиар-чат @{uname} ({title})")
+                                    print(f"[AdScout] Вступили (без звука) в пиар-чат @{uname} ({title})")
                                     notify_fn(
                                         f"📣 <b>Найдена бесплатная рекламная площадка</b>\n"
                                         f"💬 {title} (@{uname})\n"
@@ -319,6 +343,9 @@ async def ad_boards_loop(client, conn, notify_fn):
                         await asyncio.sleep(e.seconds + 30)
                     except Exception as e:
                         print(f"[AdPost Error] @{t_uname}: {e}")
+                        if "plain results" in str(e) or "send_messages" in str(e):
+                            cur.execute("UPDATE ad_chats SET status = 'rejected' WHERE username = ?", (t_uname,))
+                            conn.commit()
 
         except Exception as e:
             print(f"[AdBoards Loop Error]: {e}")
